@@ -8,5 +8,4 @@ environments. Contribute to development by reporting issues and performance
 bottlenecks.
 
 ### Documentation
-- http://godoc.org/github.com/gautham/token
-- http://godoc.org/github.com/gautham/serializer
+http://godoc.org/github.com/rrm80/gautham

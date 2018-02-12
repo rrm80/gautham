@@ -1,6 +1,7 @@
 package token
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/rand"
 	"encoding/base32"
@@ -27,6 +28,13 @@ var mapPool = sync.Pool{
 		}
 
 		return m
+	},
+}
+
+// bufferPool is used to reuse bytes.Buffers used in msgpack encoding routines.
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
 	},
 }
 
@@ -474,37 +482,34 @@ func (st *Store) retrieveToken(k string) (t *Token, err error) {
 // These strings are stored in the storage backend and used to keep track of
 // and verify issued tokens.
 func (st *Store) encStorageData(t *Token) (tk, fpi, fpc string, err error) {
-	var ec = make(chan error, 3)
-	var wg sync.WaitGroup
-	var fn = func(v interface{}, p *string) {
-		var err error
-		var b []byte
-
-		defer wg.Done()
-		if b, err = msgpack.Marshal(v); nil != err {
-			ec <- err
-			return
-		}
-
-		*p = string(b)
-	}
+	var buf = bufferPool.Get().(*bytes.Buffer)
+	var enc = msgpack.NewEncoder(buf)
+	defer func() { buf.Reset(); bufferPool.Put(buf) }()
 
 	if nil == t {
 		const s = "\xc0"
 		return s, s, s, nil
 	}
 
-	wg.Add(3)
-	go fn(t, &tk)
-	go fn(t.fpi, &fpi)
-	go fn(t.fpc, &fpc)
-	wg.Wait()
-	close(ec)
-
-	if err, _ := <-ec; nil != err {
-		return "", "", "", storeErrorf(efCodecError, err)
+	if err = enc.Encode(t); nil != err {
+		return
 	}
 
+	tk = buf.String()
+	buf.Reset()
+
+	if err = enc.Encode(t.fpi); nil != err {
+		return
+	}
+
+	fpi = buf.String()
+	buf.Reset()
+
+	if err = enc.Encode(t.fpc); nil != err {
+		return
+	}
+
+	fpc = buf.String()
 	return
 }
 
@@ -512,40 +517,37 @@ func (st *Store) encStorageData(t *Token) (tk, fpi, fpc string, err error) {
 // containing the Msgpack encoded metadata. For details, see the encStorageData
 // method.
 func (st *Store) decStorageData(tk, bi, bc string) (t *Token, err error) {
-	var ec chan error
-	var wg sync.WaitGroup
-	var fpi, fpc *Footprint
-	var fn = func(s string, v interface{}) {
-		defer wg.Done()
-		if 0 == len(s) || "\xc0" == tk {
-			return
-		}
-
-		if err := msgpack.Unmarshal([]byte(s), v); nil != err {
-			ec <- err
-			return
-		}
-	}
+	var buf *bytes.Buffer
+	var dec *msgpack.Decoder
 
 	if 0 == len(tk) || "\xc0" == tk {
-		return nil, nil
+		return
 	}
 
-	ec = make(chan error, 3)
-	wg.Add(3)
-	go fn(tk, &t)
-	go fn(bi, &fpi)
-	go fn(bc, &fpc)
-
-	wg.Wait()
-	close(ec)
-
-	if err, _ := <-ec; nil != err {
-		return nil, storeErrorf(efCodecError, err)
+	buf = bytes.NewBufferString(tk)
+	dec = msgpack.NewDecoder(buf)
+	defer func() { buf.Reset(); bufferPool.Put(buf) }()
+	if err = dec.Decode(&t); nil != err {
+		return
 	}
 
-	t.fpi = fpi
-	t.fpc = fpc
+	buf.Reset()
+	if _, err = buf.WriteString(bi); nil != err {
+		return
+	}
+
+	if err = dec.Decode(&t.fpi); nil != err {
+		return
+	}
+
+	buf.Reset()
+	if _, err = buf.WriteString(bc); nil != err {
+		return
+	}
+
+	if err = dec.Decode(&t.fpc); nil != err {
+		return
+	}
 
 	return
 }

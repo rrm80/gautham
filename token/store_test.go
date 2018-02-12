@@ -418,6 +418,27 @@ func TestList(t *testing.T) {
 	}
 }
 
+func BenchmarkEncStorageData(b *testing.B) {
+	var st Store
+	for i := 0; i < b.N; i++ {
+		if _, _, _, err := st.encStorageData(tToken); nil != err {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkDecStorageData(b *testing.B) {
+	var st Store
+	var tk, fpi, fpc = string(tTokenBin), string(tFpIBin), string(tFpCBin)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := st.decStorageData(tk, fpi, fpc); nil != err {
+			b.Fatal(err)
+		}
+	}
+}
+
 // toB64 is a helper that converts a given byte-slice to a Base64URL string.
 func toB64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 

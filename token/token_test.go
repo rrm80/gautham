@@ -105,3 +105,41 @@ func TestMain(m *testing.M) {
 	redisServer.Close()
 	os.Exit(n)
 }
+
+func BenchmarkTokenBin(b *testing.B) {
+	b.Run("Enc", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, err := msgpack.Marshal(tToken); nil != err {
+				b.Fatal(err)
+			}
+		}
+	})
+
+	b.Run("Dec", func(b *testing.B) {
+		var tk *Token
+		for i := 0; i < b.N; i++ {
+			if err := msgpack.Unmarshal(tTokenBin, &tk); nil != err {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkFootprintBin(b *testing.B) {
+	b.Run("Enc", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, err := msgpack.Marshal(tToken.fpi); nil != err {
+				b.Fatal(err)
+			}
+		}
+	})
+
+	b.Run("Dec", func(b *testing.B) {
+		var fp *Footprint
+		for i := 0; i < b.N; i++ {
+			if err := msgpack.Unmarshal(tFpIBin, &fp); nil != err {
+				b.Fatal(err)
+			}
+		}
+	})
+}

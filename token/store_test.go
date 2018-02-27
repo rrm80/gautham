@@ -1,12 +1,16 @@
 package token
 
 import (
+	"crypto"
+	"crypto/rand"
 	"encoding/base64"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/go-redis/redis"
 	"github.com/google/uuid"
+	"github.com/rrm80/gautham/serializer"
 )
 
 func TestMakeStorageKey(t *testing.T) {
@@ -455,4 +459,96 @@ func skipIfNoRedisClient(t *testing.T) {
 	if err := redisClient.Ping().Err(); nil != err {
 		t.Skipf(ef, "PING ERR: "+err.Error())
 	}
+}
+
+func ExampleNewStore() {
+	var backend *redis.Client
+	var serlr serializer.Serializer
+	var hmacKey [256]byte
+	var store *Store
+	var someId uuid.UUID
+	var err error
+
+	backend = redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "REDIS_AUTH",
+	})
+
+	// Ideally, the HMAC signing key should be compiled into the binary (think
+	// const) or stowed away in some file somewhere. For the purpose of this
+	// example, rsaKey is a slice of pseudorandom bytes. This is impractical.
+	if _, err = rand.Read(hmacKey[:]); nil != err {
+		panic(err)
+	}
+
+	// The crypto/sha256 package needs to be imported by the client package for
+	// this to work, see docs for the crypto package.
+	if serlr, err = serializer.New(
+		serializer.SignHMAC, hmacKey[:], crypto.SHA256); nil != err {
+		panic(err)
+	}
+
+	// NewStore does not care if backend can be PINGed, or if serlr works as
+	// expected. Both of these are attached as-is to the returned Store.
+	//
+	// Either/both of the arguments can be nil as well, but the ConnectStorage
+	// and/or UseSerializer functions will need to be called to make the Store
+	// operate normally.
+	store = NewStore(backend, serlr)
+
+	if someId, err =
+		uuid.Parse("fb3f70d5-ce69-418d-bec3-3fb43307171b"); nil != err {
+		panic(err)
+	}
+
+	store.Issue(someId, 0, "", "", "", "")
+	// ... etc.
+}
+
+func ExampleStore_UseSerializer() {
+	var store *Store
+	var hmacKey [256]byte
+	var err error
+
+	// Although a Store can be directly constructed like:
+	//     store = &Store{...}
+	// But the recommended way to obtain a Store is through the NewStore function
+	// even if no backend or serializer are immediately attached.
+	store = NewStore(nil, nil)
+
+	// Ideally, the HMAC signing key should be compiled into the binary (think
+	// const) or stowed away in some file somewhere. For the purpose of this
+	// example, rsaKey is a slice of pseudorandom bytes. This is impractical.
+	if _, err = rand.Read(hmacKey[:]); nil != err {
+		panic(err)
+	}
+
+	// The crypto/sha256 package needs to be imported by the client package for
+	// this to work, see docs for the crypto package.
+	if err = store.UseSerializer(
+		serializer.SignHMAC, hmacKey[:], crypto.SHA256); nil != err {
+		panic(err)
+	}
+
+	// store now utilizes the serializer.Serializer constructed from the given
+	// arguments to serialize/deserialize Tokens.
+}
+
+func ExampleStore_ConnectStorage() {
+	var store *Store
+	var err error
+
+	// Although a Store can be directly constructed like:
+	//     store = &Store{...}
+	// But the recommended way to obtain a Store is through the NewStore function
+	// even if no backend or serializer are immediately attached.
+	store = NewStore(nil, nil)
+
+	if err = store.ConnectStorage(
+		"redis://REDIS_AUTH:localhost:6379"); nil != err {
+		panic(err)
+	}
+
+	// store now utilizes the redis.Client constructed from the given argument
+	// for storage operations.
 }

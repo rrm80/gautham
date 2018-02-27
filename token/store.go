@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base32"
 	"encoding/base64"
+	"encoding/binary"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -56,8 +57,9 @@ var bufferPool = sync.Pool{
 // the Token that is registered with the storage backend is mostly Msgpack
 // encoded.
 type Store struct {
-	redis *redis.Client
-	serlr serializer.Serializer
+	redis  *redis.Client
+	serlr  serializer.Serializer
+	ctxKey ctxKey
 
 	// Namespace is used to prefix all storage keys in Redis to prevent collision
 	// with other Stores using the same Redis backend.
@@ -73,18 +75,20 @@ type Store struct {
 	DefaultExp time.Duration
 }
 
+type ctxKey uint64
+
 // NewStore constructs and returns a new Store with some sane defaults. The
 // client and serlr arguments may be nil, but the Store will not perform its
 // job without a storage backend, or a serializer. The ConnectStorage and
 // UseSerializer methods can be used to later attach a storage backend and a
 // serializer, respectively.
 func NewStore(client *redis.Client, serlr serializer.Serializer) (st *Store) {
-	var b [5]byte
+	var b [13]byte
 	var nsp = [14]byte{'s', 't', 'o', 'r', 'e', '-'}
 	var enc = base32.NewEncoding("ybndrfg8ejkmcpqxot1uwisza345h769")
 
 	rand.Read(b[:])
-	enc.Encode(nsp[6:], b[:])
+	enc.Encode(nsp[6:], b[:5])
 
 	// the defaults are:
 	//
@@ -95,6 +99,7 @@ func NewStore(client *redis.Client, serlr serializer.Serializer) (st *Store) {
 	return &Store{
 		redis:      client,
 		serlr:      serlr,
+		ctxKey:     ctxKey(binary.LittleEndian.Uint64(b[5:])),
 		Namespace:  string(nsp[:]),
 		DefaultExp: 72 * time.Hour,
 	}
@@ -236,18 +241,18 @@ func (st *Store) Revoke(t *Token) (err error) {
 	}
 
 	if nil == t {
-		return StoreError("nil *Token passed for revokation")
+		return newStoreError("nil *Token passed for revokation")
 	}
 
 	sk = st.makeStorageKey(t, false)
 	if n, err := st.redis.Exists(sk).Result(); nil != err {
-		return storeErrorf(efBackendError, err)
+		return newBackendError(err.Error())
 	} else if 0 == n {
 		return ErrUnregistered
 	}
 
 	if err := st.redis.Del(sk).Err(); nil != err {
-		return storeErrorf(efBackendError, err)
+		return newStoreError(err.Error())
 	}
 
 	return
@@ -355,7 +360,7 @@ func (st *Store) List(t *Token) (ts []*Token, err error) {
 	}
 
 	if err := it.Err(); nil != err {
-		return nil, storeErrorf(efBackendError, err)
+		return nil, newBackendError(err.Error())
 	}
 
 	wg.Wait()
@@ -383,24 +388,24 @@ func (st *Store) accessToken(t *Token) (err error) {
 	// registered or has been revoked
 	sk = st.makeStorageKey(t, false)
 	if n, err := st.redis.Exists(sk).Result(); nil != err {
-		return storeErrorf(efBackendError, err)
+		return newBackendError(err.Error())
 	} else if 0 == n {
 		return ErrUnregistered
 	}
 
 	if s, err := st.redis.HGet(sk, mapKeys[1]).Result(); nil != err {
-		return storeErrorf(efBackendError, err)
+		return newBackendError(err.Error())
 	} else if 0 == len(s) {
-		return storeErrorf(efBackendError, evMapValues)
+		return newBackendError(evMapValues)
 	} else if err = msgpack.Unmarshal([]byte(s), &t.fpi); nil != err {
-		return storeErrorf(efCodecError, err)
+		return newBackendError(err.Error())
 	}
 
 	// store the current Footprint in storage backend
 	if fpb, err := msgpack.Marshal(t.fpc); nil != err {
-		return storeErrorf(efCodecError, err)
+		return newCodecError(err.Error())
 	} else if err = st.redis.HSet(sk, mapKeys[2], fpb).Err(); nil != err {
-		return storeErrorf(efBackendError, err)
+		return newBackendError(err.Error())
 	}
 
 	return
@@ -431,12 +436,12 @@ func (st *Store) registerToken(t *Token) (err error) {
 
 	sk = st.makeStorageKey(t, false)
 	if err := st.redis.HMSet(sk, m).Err(); nil != err {
-		return storeErrorf(efBackendError, err)
+		return newBackendError(err.Error())
 	}
 
 	if 0 != t.Expires {
 		if err := st.redis.ExpireAt(sk, (t.Expires + 5).Time()).Err(); nil != err {
-			return storeErrorf(efBackendError, err)
+			return newBackendError(err.Error())
 		}
 	}
 
@@ -450,11 +455,11 @@ func (st *Store) retrieveToken(k string) (t *Token, err error) {
 	var vv []interface{}
 
 	if vv, err = st.redis.HMGet(k, mapKeys[:]...).Result(); nil != err {
-		return nil, storeErrorf(efBackendError, err)
+		return nil, newBackendError(err.Error())
 	}
 
 	if len(vv) != len(mapKeys[:]) {
-		return nil, storeErrorf(efBackendError, evMapSize)
+		return nil, newBackendError(evMapSize)
 	}
 
 	for i, v := range vv {
@@ -465,7 +470,7 @@ func (st *Store) retrieveToken(k string) (t *Token, err error) {
 		}
 
 		if sv[i], ok = v.(string); !ok {
-			return nil, storeErrorf(efBackendError, evMapValues)
+			return nil, newBackendError(evMapValues)
 		}
 	}
 
